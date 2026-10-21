@@ -46,6 +46,10 @@ class Config:
     escalate_after_min: int = 30
     # Начало рабочих суток: всё, что раньше, относится к предыдущему дню (заведение работает после полуночи).
     day_start: time = time(5, 0)
+    # Автообновление из релизов GitHub.
+    update_repo: str = "dkurach/check-list-bot"
+    github_token: str | None = None
+    auto_update: bool = True
 
     @property
     def data_dir(self) -> Path:
@@ -81,4 +85,7 @@ def load_config(home: Path) -> Config:
         setup_code=env.get("SETUP_CODE") or None,
         escalate_after_min=int(env.get("ESCALATE_AFTER_MIN", "30")),
         day_start=time.fromisoformat(env.get("DAY_START", "05:00").zfill(5)),
+        update_repo=env.get("UPDATE_REPO") or "dkurach/check-list-bot",
+        github_token=env.get("GITHUB_TOKEN") or None,
+        auto_update=env.get("AUTO_UPDATE", "1").strip().lower() not in {"0", "no", "false", "нет"},
     )

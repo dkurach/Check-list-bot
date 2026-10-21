@@ -1,4 +1,4 @@
-"""Командная строка: python -m checklist_bot {run,setup,start,stop,restart,status,uninstall}."""
+"""Командная строка: python -m checklist_bot {run,setup,start,stop,restart,status,rollback,uninstall}."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import secrets
 import sys
 import time
@@ -14,16 +15,17 @@ import urllib.request
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from . import service
+from . import service, updater
 from .config import ENV_FILE, ConfigError, load_config, read_env, write_env
 from .db import DB
+from .logs import setup_logging
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="checklist_bot", description="Telegram-бот для задач в общем чате")
     parser.add_argument(
         "command",
-        choices=["run", "setup", "start", "stop", "restart", "status", "uninstall"],
+        choices=["run", "setup", "start", "stop", "restart", "status", "rollback", "uninstall"],
         help="run - запустить в этом окне; setup - установка; start/stop/restart - фоновый бот",
     )
     parser.add_argument("--home", type=Path, default=Path.cwd(), help="папка установки (где лежит .env)")
@@ -45,7 +47,10 @@ def main(argv: list[str] | None = None) -> int:
         return start(home)
     if args.command == "status":
         print("Бот работает." if service.is_running(home / "data") else "Бот не запущен.")
+        print(f"Версия: {updater.current_version(home / 'data')}")
         return 0
+    if args.command == "rollback":
+        return rollback(home)
     if args.command == "uninstall":
         service.stop(home)
         service.remove_autostart()
@@ -55,28 +60,43 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def run(home: Path) -> int:
-    from aiogram.exceptions import TelegramUnauthorizedError
-
-    from .app import run as run_bot
-    from .app import setup_logging
-
     try:
         cfg = load_config(home)
     except ConfigError as exc:
         print(exc, file=sys.stderr)
         return 2
     lock = service.InstanceLock(cfg.data_dir)
-    if not lock.acquire():
-        print("Бот уже запущен из этой папки.", file=sys.stderr)
-        return 3
+    # После перезапуска для обновления прежний процесс может ещё завершаться.
+    deadline = time.monotonic() + 60
+    while not lock.acquire():
+        if time.monotonic() > deadline:
+            print("Бот уже запущен из этой папки.", file=sys.stderr)
+            return 3
+        time.sleep(1)
     setup_logging(cfg)
     log = logging.getLogger("checklist_bot")
+
+    if updater.staged_tag(cfg.data_dir):
+        # Ставим обновление до загрузки aiogram, чтобы его файлы не были заняты этим процессом.
+        try:
+            tag = updater.apply_staged(home)
+            log.info("Установлено обновление %s", tag)
+        except updater.UpdateError as exc:
+            log.error("Обновление не установлено: %s", exc)
+        lock.release()
+        return relaunch(home)
+
+    # aiogram загружаем только здесь: до этого момента процесс не держит файлы зависимостей.
+    from aiogram.exceptions import TelegramUnauthorizedError
+
+    from .app import run as run_bot
+
     try:
         # Перезапускаем при неожиданных сбоях, чтобы бот не падал насовсем.
         while True:
             try:
-                asyncio.run(run_bot(cfg))
-                return 0
+                restart = asyncio.run(run_bot(cfg))
+                break
             except KeyboardInterrupt:
                 return 0
             except TelegramUnauthorizedError:
@@ -87,6 +107,30 @@ def run(home: Path) -> int:
                 time.sleep(15)
     finally:
         lock.release()
+    return relaunch(home) if restart else 0
+
+
+def relaunch(home: Path) -> int:
+    """Запускает бота заново новым процессом (уже с новым кодом)."""
+    logging.shutdown()
+    if service.is_windows():
+        service.spawn(home)
+        return 0
+    # На macOS и Linux заменяем текущий процесс: launchd видит тот же процесс и не путается.
+    os.execv(sys.executable, [sys.executable, "-m", "checklist_bot", "run", "--home", str(home)])
+    return 0  # pragma: no cover
+
+
+def rollback(home: Path) -> int:
+    was_running = service.stop(home)
+    wait_stopped(home)
+    try:
+        version = updater.restore_previous(home)
+    except updater.UpdateError as exc:
+        print(f"Откат не удался: {exc}")
+        return 1
+    print(f"Возвращена версия {version}.")
+    return start(home) if was_running else 0
 
 
 def start(home: Path) -> int:
@@ -120,6 +164,33 @@ def ask(prompt: str, default: str | None = None) -> str:
             return value
         if default:
             return default
+
+
+def ask_github_token(repo: str, current: str) -> str:
+    """Токен GitHub только на чтение: нужен боту, чтобы скачивать обновления из приватного репозитория."""
+    if updater.check_access(repo, None):
+        return current  # репозиторий публичный, токен не нужен
+    print(
+        "\nДля автообновления нужен токен GitHub с доступом только на чтение к репозиторию "
+        f"{repo} (fine-grained token, право Contents: Read-only). Его выдаёт разработчик."
+    )
+    while True:
+        hint = " [сохранён, Enter - оставить]" if current else " [Enter - пропустить]"
+        value = input(f"Токен GitHub{hint}: ").strip() or current
+        if not value:
+            print(
+                "Автообновление не будет работать, пока не указан токен. Его можно добавить позже, запустив установку."
+            )
+            return ""
+        try:
+            if updater.check_access(repo, value):
+                print("Доступ к обновлениям есть.")
+                return value
+        except OSError as exc:
+            print(f"Не удалось проверить токен (нет интернета?): {exc}. Сохраняю как есть.")
+            return value
+        print("GitHub не принял этот токен или у него нет доступа к репозиторию.")
+        current = ""
 
 
 def time_of_day(value: str) -> str:
@@ -190,6 +261,7 @@ def setup(home: Path) -> int:
 
     env["TIMEZONE"] = tz_name
     env["DAY_START"] = day_start
+    env["GITHUB_TOKEN"] = ask_github_token(env.get("UPDATE_REPO") or updater.DEFAULT_REPO, env.get("GITHUB_TOKEN", ""))
     env.setdefault("ADMIN_IDS", "")
     env.setdefault("ESCALATE_AFTER_MIN", "30")
     env["SETUP_CODE"] = env.get("SETUP_CODE") or secrets.token_hex(4)

@@ -20,6 +20,7 @@ BTN_TODAY = "📋 Сегодня"
 BTN_TASKS = "🗂 Задачи"
 BTN_NEW_TASK = "➕ Новая задача"
 BTN_STAFF = "👥 Сотрудники"
+BTN_UPDATE = "🔄 Обновление"
 
 router = Router(name="menu")
 router.message.filter(F.chat.type == "private")
@@ -43,7 +44,7 @@ def main_menu(admin: bool) -> ReplyKeyboardMarkup:
         [KeyboardButton(text=BTN_TASKS), KeyboardButton(text=BTN_NEW_TASK)],
     ]
     if admin:
-        rows.append([KeyboardButton(text=BTN_STAFF)])
+        rows.append([KeyboardButton(text=BTN_STAFF), KeyboardButton(text=BTN_UPDATE)])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
@@ -104,7 +105,8 @@ HELP_ADMIN = (
     f"{BTN_TODAY}: задачи на сегодня, закрыть или отменить вручную.\n"
     f"{BTN_TASKS}: список задач, пауза и удаление.\n"
     f"{BTN_NEW_TASK}: создать задачу.\n"
-    f"{BTN_STAFF}: сотрудники и старшие смены.\n\n"
+    f"{BTN_STAFF}: сотрудники и старшие смены.\n"
+    f"{BTN_UPDATE}: версия бота и установка новой.\n\n"
     "Чтобы привязать общий чат, добавьте меня туда админом и отправьте в чате /bind."
 )
 HELP_LEAD = f"{BTN_SHIFT}, {BTN_TODAY}, {BTN_TASKS} и {BTN_NEW_TASK} доступны в меню ниже."

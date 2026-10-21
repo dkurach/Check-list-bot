@@ -5,14 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import date, datetime, timedelta
 from html import escape
 
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.types import ReactionTypeEmoji
 
-from . import texts
+from . import texts, updater
 from .access import all_admin_ids
 from .config import Config
 from .db import DB, OPEN_STATUSES, assignee_ids
@@ -38,6 +38,10 @@ class Engine:
         self.cfg = cfg
         self._clock = clock or (lambda: datetime.now(cfg.tz))
         self._last_backup_day: date | None = None
+        self._last_update_check: date | None = None
+        self._notice_sent = False
+        self.restart_requested = False
+        self.on_restart: Callable[[], Awaitable] | None = None
 
     def now(self) -> datetime:
         return self._clock()
@@ -60,9 +64,11 @@ class Engine:
             await asyncio.sleep(TICK_SECONDS)
 
     async def tick(self) -> None:
+        await self.send_update_notice()
         await self.publish_due()
         await self.check_deadlines()
         self.daily_backup()
+        await self.daily_update_check()
 
     # --- публикация ---
 
@@ -270,3 +276,39 @@ class Engine:
                 path.unlink()
         except OSError:
             log.exception("Не удалось сделать бэкап базы")
+
+    # --- обновления ---
+
+    async def send_update_notice(self) -> None:
+        """После перезапуска сообщаем админам, чем закончилось обновление."""
+        if self._notice_sent:
+            return
+        self._notice_sent = True
+        notice = updater.pop_notice(self.cfg.data_dir)
+        if notice:
+            await self.notify_admins(escape(notice))
+
+    async def daily_update_check(self) -> None:
+        if not self.cfg.auto_update or not updater.auto_update_allowed(self.cfg.home):
+            return
+        today = self.business_date()
+        if self._last_update_check == today:
+            return
+        self._last_update_check = today
+        try:
+            release = await asyncio.to_thread(
+                updater.available_update, self.cfg.home, self.cfg.update_repo, self.cfg.github_token
+            )
+        except (updater.UpdateError, OSError) as exc:
+            log.warning("Не удалось проверить обновления: %s", exc)
+            return
+        if release:
+            await self.install_update(release)
+
+    async def install_update(self, release: updater.Release) -> None:
+        """Скачивает релиз и перезапускает бота, чтобы новый процесс его установил."""
+        log.info("Скачиваю обновление %s", release.tag)
+        await asyncio.to_thread(updater.download_and_stage, release, self.cfg.data_dir, self.cfg.github_token)
+        self.restart_requested = True
+        if self.on_restart:
+            await self.on_restart()

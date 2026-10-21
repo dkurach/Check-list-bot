@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date, timedelta
 from html import escape
 
@@ -9,12 +10,12 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from .. import texts
+from .. import texts, updater
 from ..config import Config
 from ..db import DB, OPEN_STATUSES
 from ..engine import Engine
 from ..schedule import describe
-from .menu import BTN_SHIFT, BTN_STAFF, BTN_TASKS, BTN_TODAY, AdminOnly, StaffOnly
+from .menu import BTN_SHIFT, BTN_STAFF, BTN_TASKS, BTN_TODAY, BTN_UPDATE, AdminOnly, StaffOnly
 
 router = Router(name="manage")
 router.message.filter(F.chat.type == "private", StaffOnly())
@@ -286,3 +287,49 @@ async def staff_approve(callback: CallbackQuery, db: DB, engine: Engine, cfg: Co
         result = f"✖️ Заявка {escape(emp['full_name'])} отклонена."
     await callback.message.edit_text(result)
     await callback.answer()
+
+
+# --- обновление (только главный админ) ---
+
+
+@router.message(F.text == BTN_UPDATE, AdminOnly())
+async def update_menu(message: Message, engine: Engine) -> None:
+    cfg = engine.cfg
+    current = updater.current_version(cfg.data_dir)
+    if not updater.auto_update_allowed(cfg.home):
+        await message.answer(f"Версия: {current}.\nЭто рабочая копия git, обновляйте её через git pull.")
+        return
+    try:
+        release = await asyncio.to_thread(updater.fetch_latest, cfg.update_repo, cfg.github_token)
+    except (updater.UpdateError, OSError) as exc:
+        await message.answer(f"Версия: {current}.\nНе удалось проверить обновления: {escape(str(exc))}")
+        return
+    if release is None:
+        hint = "" if cfg.github_token else " Возможно, не указан токен GitHub: запустите установку ещё раз."
+        await message.answer(f"Версия: {current}.\nРелизов на GitHub не найдено.{hint}")
+        return
+    if not updater.is_newer(release.tag, current):
+        await message.answer(f"Версия: {current}. Это последняя версия.")
+        return
+    kb = InlineKeyboardBuilder()
+    kb.button(text=f"Обновить до {release.tag}", callback_data=f"upd:{release.tag}")
+    await message.answer(
+        f"Версия: {current}.\nДоступна новая: <b>{escape(release.tag)}</b>.\n"
+        "Бот перезапустится примерно за минуту, задачи при этом не потеряются.",
+        reply_markup=kb.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("upd:"), AdminOnly())
+async def update_now(callback: CallbackQuery, engine: Engine) -> None:
+    cfg = engine.cfg
+    await callback.message.edit_text("Скачиваю обновление…")
+    await callback.answer()
+    try:
+        release = await asyncio.to_thread(updater.fetch_latest, cfg.update_repo, cfg.github_token)
+        if release is None:
+            raise updater.UpdateError("релиз не найден")
+        await callback.message.edit_text(f"Устанавливаю {escape(release.tag)} и перезапускаюсь. Напишу, когда закончу.")
+        await engine.install_update(release)
+    except (updater.UpdateError, OSError) as exc:
+        await callback.message.edit_text(f"Не удалось скачать обновление: {escape(str(exc))}")

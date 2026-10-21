@@ -150,6 +150,11 @@ def start(home: Path) -> None:
         if result.returncode != 0:
             raise RuntimeError(f"launchctl bootstrap: {result.stderr.strip()}")
         return
+    spawn(home)
+
+
+def spawn(home: Path) -> None:
+    """Запускает бота отдельным фоновым процессом, не привязанным к текущему окну."""
     kwargs: dict = {
         "cwd": str(home),
         "stdin": subprocess.DEVNULL,

@@ -56,7 +56,7 @@ ADMIN = 1
 
 @pytest.fixture
 def cfg(tmp_path: Path) -> Config:
-    return Config(home=tmp_path, token="x", tz=TZ, admin_ids={ADMIN}, escalate_after_min=30)
+    return Config(home=tmp_path, token="x", tz=TZ, admin_ids={ADMIN}, escalate_after_min=30, auto_update=False)
 
 
 @pytest.fixture
