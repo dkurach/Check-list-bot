@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -43,6 +44,8 @@ class Config:
     admin_ids: set[int] = field(default_factory=set)
     setup_code: str | None = None
     escalate_after_min: int = 30
+    # Начало рабочих суток: всё, что раньше, относится к предыдущему дню (заведение работает после полуночи).
+    day_start: time = time(5, 0)
 
     @property
     def data_dir(self) -> Path:
@@ -77,4 +80,5 @@ def load_config(home: Path) -> Config:
         admin_ids=parse_ids(env.get("ADMIN_IDS", "")),
         setup_code=env.get("SETUP_CODE") or None,
         escalate_after_min=int(env.get("ESCALATE_AFTER_MIN", "30")),
+        day_start=time.fromisoformat(env.get("DAY_START", "05:00").zfill(5)),
     )

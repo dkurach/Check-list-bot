@@ -43,7 +43,10 @@ def parse_times(text: str) -> list[time]:
 
 
 def parse_window(text: str) -> tuple[int, time, time]:
-    """«120 10:00-20:00» -> (120, 10:00, 20:00). Первое число - интервал в минутах или количество раз."""
+    """«120 10:00-20:00» -> (120, 10:00, 20:00). Первое число - интервал в минутах или количество раз.
+
+    Конец раньше начала значит, что окно переходит через полночь («45 14:45-02:45»).
+    """
     match = re.fullmatch(r"\s*(\d+)\s+(\d{1,2}[:.]\d{2})\s*[-–—]\s*(\d{1,2}[:.]\d{2})\s*", text)
     if not match:
         raise ScheduleError("Нужно в виде «120 10:00-20:00»: число, пробел, начало-конец.")
@@ -51,8 +54,8 @@ def parse_window(text: str) -> tuple[int, time, time]:
     start, end = parse_hhmm(match.group(2)), parse_hhmm(match.group(3))
     if number <= 0:
         raise ScheduleError("Число должно быть больше нуля.")
-    if end < start:
-        raise ScheduleError("Конец окна раньше начала.")
+    if end == start:
+        raise ScheduleError("Начало и конец окна совпадают.")
     return number, start, end
 
 
@@ -73,25 +76,35 @@ def describe_weekdays(weekdays: str) -> str:
     return ", ".join(WEEKDAY_NAMES[int(d) - 1] for d in weekdays)
 
 
-def _at(day: date, value: time, tz: ZoneInfo) -> datetime:
-    return datetime.combine(day, value, tzinfo=tz)
+def business_day(moment: datetime, day_start: time) -> date:
+    """Рабочие сутки, к которым относится момент: ночь до day_start - это ещё предыдущий день."""
+    shift = timedelta(hours=day_start.hour, minutes=day_start.minute)
+    return (moment - shift).date()
 
 
-def occurrences(tpl: Mapping, day: date, tz: ZoneInfo) -> list[datetime]:
-    """Все моменты публикации задачи в указанный день."""
+def _at(day: date, value: time, tz: ZoneInfo, day_start: time) -> datetime:
+    """Время внутри рабочих суток day: часы до day_start попадают на следующую календарную дату."""
+    moment = datetime.combine(day, value, tzinfo=tz)
+    return moment + timedelta(days=1) if value < day_start else moment
+
+
+def occurrences(tpl: Mapping, day: date, tz: ZoneInfo, day_start: time = time(0)) -> list[datetime]:
+    """Все моменты публикации задачи в рабочие сутки day."""
     kind = tpl["kind"]
     if kind == KIND_ONCE:
         once_at = datetime.fromisoformat(tpl["once_at"])
-        return [once_at] if once_at.astimezone(tz).date() == day else []
+        return [once_at] if business_day(once_at.astimezone(tz), day_start) == day else []
 
     if str(day.isoweekday()) not in tpl["weekdays"]:
         return []
 
     if kind == KIND_TIMES:
-        return [_at(day, t, tz) for t in parse_times(tpl["times"])]
+        return sorted(_at(day, t, tz, day_start) for t in parse_times(tpl["times"]))
 
-    start = _at(day, parse_hhmm(tpl["start_time"]), tz)
-    end = _at(day, parse_hhmm(tpl["end_time"]), tz)
+    start = _at(day, parse_hhmm(tpl["start_time"]), tz, day_start)
+    end = _at(day, parse_hhmm(tpl["end_time"]), tz, day_start)
+    if end < start:  # окно через полночь
+        end += timedelta(days=1)
 
     if kind == KIND_INTERVAL:
         step = timedelta(minutes=int(tpl["interval_min"]))

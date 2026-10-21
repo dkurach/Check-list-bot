@@ -50,7 +50,7 @@ def shift_view(db: DB, day: date, today: date) -> tuple[str, object]:
 
 @router.message(F.text == BTN_SHIFT)
 async def shift_menu(message: Message, db: DB, engine: Engine) -> None:
-    today = engine.now().date()
+    today = engine.business_date()
     text, markup = shift_view(db, today, today)
     await message.answer(text, reply_markup=markup)
 
@@ -58,7 +58,7 @@ async def shift_menu(message: Message, db: DB, engine: Engine) -> None:
 @router.callback_query(F.data.startswith("shift_day:"))
 async def shift_switch_day(callback: CallbackQuery, db: DB, engine: Engine) -> None:
     day = date.fromisoformat(callback.data.split(":", 1)[1])
-    text, markup = shift_view(db, day, engine.now().date())
+    text, markup = shift_view(db, day, engine.business_date())
     await callback.message.edit_text(text, reply_markup=markup)
     await callback.answer()
 
@@ -67,7 +67,7 @@ async def shift_switch_day(callback: CallbackQuery, db: DB, engine: Engine) -> N
 async def shift_toggle(callback: CallbackQuery, db: DB, engine: Engine) -> None:
     _, day_key, emp_id = callback.data.split(":")
     db.toggle_shift(day_key, int(emp_id))
-    text, markup = shift_view(db, date.fromisoformat(day_key), engine.now().date())
+    text, markup = shift_view(db, date.fromisoformat(day_key), engine.business_date())
     await callback.message.edit_text(text, reply_markup=markup)
     await callback.answer()
 

@@ -122,6 +122,15 @@ def ask(prompt: str, default: str | None = None) -> str:
             return default
 
 
+def time_of_day(value: str) -> str:
+    from .schedule import ScheduleError, fmt_hhmm, parse_hhmm
+
+    try:
+        return fmt_hhmm(parse_hhmm(value))
+    except ScheduleError as exc:
+        raise ValueError(str(exc)) from exc
+
+
 def check_token(token: str) -> str | None:
     """Возвращает username бота или None, если токен не подошёл."""
     try:
@@ -167,7 +176,20 @@ def setup(home: Path) -> int:
             print("Не знаю такого пояса. Примеры: Europe/Moscow, Europe/Kaliningrad, Asia/Yekaterinburg.")
 
     env["BOT_TOKEN"] = token
+    print(
+        "\nЕсли заведение работает после полуночи, рабочие сутки должны заканчиваться позже.\n"
+        "Например, при работе до 3 ночи укажите 05:00: задачи и смена в 01:00 будут относиться к предыдущему дню."
+    )
+    while True:
+        day_start = ask("Время начала рабочих суток", env.get("DAY_START", "05:00"))
+        try:
+            day_start = time_of_day(day_start)
+            break
+        except ValueError:
+            print("Нужно время в виде 05:00.")
+
     env["TIMEZONE"] = tz_name
+    env["DAY_START"] = day_start
     env.setdefault("ADMIN_IDS", "")
     env.setdefault("ESCALATE_AFTER_MIN", "30")
     env["SETUP_CODE"] = env.get("SETUP_CODE") or secrets.token_hex(4)

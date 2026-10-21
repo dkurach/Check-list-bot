@@ -228,13 +228,14 @@ class DB:
         due_at: datetime,
         assignees: list[int],
         status: str = "pending",
+        day: str | None = None,
     ) -> int:
         return self._write(
             "INSERT INTO instances (template_id, day, scheduled_at, due_at, title, assignees, status) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 tpl["id"],
-                scheduled_at.date().isoformat(),
+                day or scheduled_at.date().isoformat(),
                 scheduled_at.isoformat(),
                 due_at.isoformat(),
                 tpl["title"],

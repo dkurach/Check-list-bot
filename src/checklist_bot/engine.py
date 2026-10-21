@@ -16,7 +16,7 @@ from . import texts
 from .access import all_admin_ids
 from .config import Config
 from .db import DB, OPEN_STATUSES, assignee_ids
-from .schedule import occurrences
+from .schedule import business_day, occurrences
 
 log = logging.getLogger(__name__)
 
@@ -42,8 +42,12 @@ class Engine:
     def now(self) -> datetime:
         return self._clock()
 
+    def business_date(self) -> date:
+        """Текущие рабочие сутки (после полуночи и до DAY_START это ещё вчерашний день)."""
+        return business_day(self.now(), self.cfg.day_start)
+
     def today(self) -> str:
-        return self.now().date().isoformat()
+        return self.business_date().isoformat()
 
     # --- цикл ---
 
@@ -74,12 +78,12 @@ class Engine:
         if chat_id is None:
             return
         now = self.now()
-        day = now.date()
+        day = self.business_date()
         missed: list[sqlite3.Row] = []
 
         for tpl in self.db.list_templates(active_only=True):
             created_at = datetime.fromisoformat(tpl["created_at"])
-            for at in occurrences(tpl, day, self.cfg.tz):
+            for at in occurrences(tpl, day, self.cfg.tz, self.cfg.day_start):
                 # Не создаём задачи из будущего и из времени до появления шаблона.
                 if at > now or at < created_at.replace(second=0, microsecond=0):
                     continue
@@ -88,10 +92,12 @@ class Engine:
                 due = at + timedelta(minutes=tpl["due_min"])
                 if due <= now:
                     # Бот был выключен всё время, пока задача была актуальна.
-                    inst_id = self.db.create_instance(tpl, at, due, [], status="missed")
+                    inst_id = self.db.create_instance(tpl, at, due, [], status="missed", day=day.isoformat())
                     missed.append(self.db.get_instance(inst_id))
                     continue
-                inst_id = self.db.create_instance(tpl, at, due, self.resolve_assignees(tpl, day.isoformat()))
+                inst_id = self.db.create_instance(
+                    tpl, at, due, self.resolve_assignees(tpl, day.isoformat()), day=day.isoformat()
+                )
                 inst = self.db.get_instance(inst_id)
                 if not inst["assignees"] or inst["assignees"] == "[]":
                     await self.notify_admins(

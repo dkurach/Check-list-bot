@@ -165,3 +165,31 @@ async def test_manual_close_and_cancel(engine, db, bot, clock):
 async def test_daily_backup(engine, cfg, clock):
     await engine.tick()
     assert (cfg.backups_dir / "bot-2026-10-20.db").exists()
+
+
+async def test_night_shift_after_midnight(engine, db, bot, clock):
+    # Заведение работает до 3 ночи: задача в 00:30 вторника относится к смене понедельника.
+    ivan = add_employee(db, 10, "Иван")
+    db.toggle_shift("2026-10-19", ivan)
+    db.add_template(
+        datetime(2026, 10, 19, 12, 0, tzinfo=TZ),
+        title="Ночной обход",
+        kind="interval",
+        start_time="14:45",
+        end_time="02:45",
+        interval_min=45,
+        weekdays="1",
+        due_min=30,
+    )
+    clock.set(0, 40, day=20)
+    assert engine.today() == "2026-10-19"
+    await engine.tick()
+    msgs = group_messages(bot)
+    assert len(msgs) == 1 and "tg://user?id=10" in msgs[0]["text"]
+    # Всё, что прошло, пока бот был выключен, помечено пропущенным в те же сутки.
+    statuses = [inst["status"] for inst in db.list_instances("2026-10-19")]
+    assert statuses.count("pending") == 1 and statuses.count("missed") == 13
+
+    clock.set(5, 0, day=20)  # наступили новые рабочие сутки (вторник), окна для вторника нет
+    await engine.tick()
+    assert db.list_instances("2026-10-20") == []
