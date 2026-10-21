@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import sys
-from logging.handlers import RotatingFileHandler
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -19,16 +17,6 @@ from .engine import Engine
 from .handlers import group, manage, menu, new_task
 
 log = logging.getLogger(__name__)
-
-
-def setup_logging(cfg: Config) -> None:
-    cfg.logs_dir.mkdir(parents=True, exist_ok=True)
-    handlers: list[logging.Handler] = [
-        RotatingFileHandler(cfg.logs_dir / "bot.log", maxBytes=2_000_000, backupCount=5, encoding="utf-8")
-    ]
-    if sys.stderr is not None:  # у pythonw.exe на Windows консоли нет
-        handlers.append(logging.StreamHandler())
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", handlers=handlers)
 
 
 def keep_awake() -> None:
@@ -64,12 +52,14 @@ def build_dispatcher(db: DB, cfg: Config, engine: Engine) -> Dispatcher:
     return dp
 
 
-async def run(cfg: Config) -> None:
+async def run(cfg: Config) -> bool:
+    """Работает до остановки. Возвращает True, если нужен перезапуск для установки обновления."""
     db = DB(cfg.db_path)
     db.migrate()
     bot = Bot(cfg.token, default=DefaultBotProperties(parse_mode="HTML"))
     engine = Engine(db, bot, cfg)
     dp = build_dispatcher(db, cfg, engine)
+    engine.on_restart = dp.stop_polling
 
     me = await bot.get_me()
     log.info("Бот @%s запущен, данные в %s", me.username, cfg.data_dir)
@@ -85,3 +75,4 @@ async def run(cfg: Config) -> None:
         loop_task.cancel()
         await bot.session.close()
         db.close()
+    return engine.restart_requested
